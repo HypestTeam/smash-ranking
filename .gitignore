@@ -1,0 +1,5 @@
+# the login credentials file
+database/login.json
+
+# miscellaneous dumping ground
+output.txt

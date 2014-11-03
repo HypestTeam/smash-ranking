@@ -25,6 +25,8 @@
 import challonge
 import argparse
 import re, os, json, sys
+import decimal
+import urllib
 import datetime
 
 # set up the parser
@@ -32,36 +34,48 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--bracket", "-b", help="the challonge URL bracket to check", metavar="<url>", required=True)
 parser.add_argument("--quiet", "-q", help="suppress some output", action="store_true")
 parser.add_argument("--dry-run", help="output to stdout instead of publishing changes", action="store_true")
-parser.add_argument("--new", help="shows the new users to be added to ranking without adding them, implies --dry-run", action="store_true")
 parser.add_argument("--dump", help="dumps the appropriate JSON response", action="append", choices=["tournament", "players"], default=[], metavar="<type>")
 parser.add_argument("--player", help="show player info of the bracket and exit", action="store_true")
-parser.add_argument("--force", help="forces a player to be processed. Format must have the reddit username first and then the ranking", nargs='*', action="append", default=[])
+parser.add_argument("--add", help="adds a player to be processed. Format must have the challonge first and then the ranking", nargs='*', action="append", default=[])
 parser.add_argument("--remove", help="removes a player from processing", nargs="*", metavar="<name>", action="append", default=[])
+parser.add_argument("--force", help="forces processing despite cache", action="store_true")
+parser.add_argument("--table-only", help="doesn't process a tournament and just prints the ladder", action="store_true")
 args = parser.parse_args()
 
-if args.new:
-    args.dry_run = True
+challonge_path = os.path.join("database", "challonge.json")
+cache_path = os.path.join("database", "cache.json")
+login_path = os.path.join("database", "login.json")
+
+if not os.path.exists("database"):
+    parser.error("database directory required for this program to run")
+
+if not os.path.exists(challonge_path):
+    parser.error("{} file is required for challonge to reddit username mappings".format(challonge_path))
+
+if not os.path.exists(login_path):
+    parser.error("{} file is required for login credentials".format(login_path))
 
 class User(object):
-    __slots__ = ["score", "name", "change", "forced"]
-    def __init__(self, score, name, change, forced=False):
-        self.score = score
-        self.name = name
-        self.change = change
-        # this specifies that the user has been 'forced' through --force
-        # so the presence of this being != False then it means it's already been processed through the
-        # username retrieval process
-        self.forced = forced
+    __slots__ = ["score", "name", "reddit", "change"]
+    def __init__(self, score, name, reddit=None, change=0):
+        self.score = score     # the total score in ranking
+        self.name = name       # the challonge username
+        self.reddit = reddit   # the reddit username
+        self.change = change   # the change in ranking placing
 
 class RankJsonEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, datetime.datetime):
             return obj.isoformat()
+        elif isinstance(obj, decimal.Decimal):
+            return float(obj)
+        elif isinstance(obj, set):
+            return list(obj)
         else:
             return super(RankJsonEncoder, self).default(obj)
 
 # loads the challonge database which is "challonge username": "reddit username"
-challonge_json = open(os.path.join("database", "challonge.json"))
+challonge_json = open(challonge_path)
 usernames = json.load(challonge_json)
 
 # placing to points
@@ -83,11 +97,24 @@ def get_old_rank(old_db, check):
             return i
     return None
 
+
+# gets the reddit username through a string rather than a user
+def get_raw_username(name):
+    result = usernames.get(name.lower(), None) if name != None else None
+    if result == None:
+        # since we couldn't find the name, maybe /u/challongeusername is valid
+        # which would be a reasonable default
+        response = urllib.urlopen('http://www.reddit.com/user/' + name)
+        if response.getcode() == 200:
+            result = name
+            usernames[name] = name
+    return result
+
 # gets the reddit username associated with the challonge username
 def get_username(user):
-    if user.forced:
-        return user.name
-    return usernames.get(user.name.lower(), None) if user.name != None else None
+    if user.reddit:
+        return user.reddit
+    return get_raw_username(user.name)
 
 # python 3k compatibility function
 def iter_dict(dictionary):
@@ -129,21 +156,17 @@ def get_top(limit, tournament):
             name = participant["challonge-username"]
             if name == None:
                 continue
-            result.append(User(score=rank, name=name, change=0))
-
-    # remove players
-    if len(args.remove) > 1:
-        for user in result:
-            for removal in args.remove:
-                if removal == user.name:
-                    user.name = None
+            reddit = get_raw_username(name)
+            result.append(User(score=rank, reddit=reddit, name=name, change=0))
 
     # add the forced player
-    for user in args.force:
-        result.append(User(score=int(user[1]), name=user[0], change=0, forced=True))
+    for user in args.add:
+        name = user[0]
+        reddit = get_raw_username(name)
+        result.append(User(score=int(user[1]), name=name, reddit=reddit, change=0))
 
     # sort and remove actual entries
-    result = [user for user in result if user.name != None]
+    result = [user for user in result if user.name not in args.remove]
     result.sort(key=lambda x: x.score)
     return result
 
@@ -156,6 +179,8 @@ def get_database_file(tournament):
         return os.path.join("database", "projectm.json")
     elif game_id == 394: # Smash Bros Melee
         return os.path.join("database", "melee.json")
+    elif game_id == 1106:
+        return os.path.join("database", "flash.json")
     else:
         return '' # not supported
 
@@ -163,9 +188,19 @@ def get_database_file(tournament):
 def get_database(tournament):
     filename = get_database_file(tournament)
     if filename:
-        with open(filename) as f:
-            return json.load(f)
+        if os.path.exists(filename):
+            with open(filename) as f:
+                return json.load(f)
+        else:
+            return dict()
     return None
+
+def load_cache():
+    if os.path.exists(cache_path):
+        with open(cache_path) as f:
+            return set(json.load(f))
+    else:
+        return set()
 
 def updated_ranking(tournament, db):
     # get an old back-up of the database to do a change compare later
@@ -175,21 +210,17 @@ def updated_ranking(tournament, db):
 
     # update the ranking
     for user in ranks:
-        name = get_username(user)
-        if name:
-            if name in db:
-                db[name] = db[name] + points[user.score]
-            else:
-                if args.new:
-                    print("new user /u/{}".format(name))
-                    continue
-                db[name] = points[user.score]
+        if user.name in db:
+            db[user.name] = db[user.name] + points[user.score]
+        else:
+            db[user.name] = points[user.score]
 
     # compare the change in ranking
     result = [User(name=k, score=v, change=0) for (k, v) in iter_dict(db)]
     result.sort(key=lambda x: x.score, reverse=True)
 
     for i, user in enumerate(result):
+        user.reddit = get_raw_username(user.name)
         old_index = get_old_rank(old, user)
         if old_index == None:
             user.change = i
@@ -203,23 +234,33 @@ def markdown_table(users):
     result = []
     # if a comment is needed to separate, it'd be put here
     result.append(today.strftime("*Last Updated: %c*"))
-    result.append("**Change**|**Rank**|**Player**|**Score**")
-    result.append(":---------|:-------|----------|---------")
+    result.append("")
+    result.append("**Change**|**Rank**|**Challonge User**|**Reddit User**|**Score**")
+    result.append(":---------|:-------|:-----------------|:--------------|:--------:")
     for i, user in enumerate(users):
-        result.append("{0.change:+}|{1}|/u/{0.name}|{0.score}".format(user, i + 1))
+        reddit = "/u/" + user.reddit if user.reddit else "Unknown"
+        result.append("{0.change:+}|{1}|[{0.name}](http://www.challonge.com/users/{0.name})|{2}|{0.score}".format(user, i + 1, reddit))
     return '\n'.join(result)
 
 # saves the database with the result of the tournament
-def publish_database(tournament, db):
+def update_database(tournament, db):
     filename = get_database_file(tournament)
-    with open(filename) as f:
+    with open(filename, 'w') as f:
         json.dump(db, f, sort_keys=True, indent=4, separators=(',', ': '), cls=RankJsonEncoder)
+
+def update_cache(cache):
+    with open(cache_path, 'w') as f:
+        json.dump(cache, f, sort_keys=True, indent=4, separators=(',', ': '), cls=RankJsonEncoder)
+
+def update_mapping():
+    with open(challonge_path, 'w') as f:
+        json.dump(usernames, f, sort_keys=True, indent=4, separators=(',', ': '), cls=RankJsonEncoder)
 
 # login to challonge to use the API. Credentials must be in database/login.json
 # the format should be { "challonge": { "username": "", "key": "" }}
 def login():
     obj = None
-    with open(os.path.join("database", "login.json")) as f:
+    with open(login_path) as f:
         obj = json.load(f)
 
     challonge_credentials = obj["challonge"]
@@ -227,12 +268,18 @@ def login():
 
 def player_list(tournament, db):
     ranks = get_top(7, tournament)
-    print("Challonge Username | Reddit Username")
+    print("{0:<20} | {1:<20} | {2}".format("Challonge Username", "Reddit Username", "Rank"))
     for user in ranks:
         reddit = get_username(user)
-        print("{0:<18} | {1:<18}".format(user.name, reddit))
+        print("{0:<20} | {1:<20} | {2}".format(user.name, reddit, user.score))
 
 if __name__ == "__main__":
+    cache = load_cache()
+    if args.bracket in cache and not args.force:
+        print('bracket already processed use --force to process it again')
+        exit(0)
+
+    cache.add(args.bracket)
     login()
     tournament = get_tournament(args.bracket)
     db = get_database(tournament)
@@ -240,13 +287,21 @@ if __name__ == "__main__":
     if not args.quiet:
         print("Tournament ID: {}".format(tournament["id"]))
         print("Tournament Name: {}".format(tournament["name"]))
+        print("Tournament File: {}".format(get_database_file(tournament)))
 
     if "tournament" in args.dump:
         print(json.dumps(tournament, sort_keys=True, indent=4, separators=(',', ': '), cls=RankJsonEncoder))
 
-    if args.player:
+    if args.table_only:
+        result = [User(name=k, score=v, reddit=get_raw_username(k)) for k, v in iter_dict(db)]
+        result.sort(key=lambda x: x.score, reverse=True)
+        print(markdown_table(result))
+    elif args.player:
         player_list(tournament, db)
-        exit(0)
-
-    users = updated_ranking(tournament, db)
-    print(markdown_table(users))
+    else:
+        users = updated_ranking(tournament, db)
+        print(markdown_table(users))
+        if not args.dry_run:
+            update_database(tournament, db)
+            update_mapping()
+            update_cache(cache)

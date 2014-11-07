@@ -179,8 +179,10 @@ def get_database_file(tournament):
         return os.path.join("database", "projectm.json")
     elif game_id == 394: # Smash Bros Melee
         return os.path.join("database", "melee.json")
-    elif game_id == 1106:
+    elif game_id == 1106: # Super Smash Flash 2
         return os.path.join("database", "flash.json")
+    elif game_id == 392: # Super Smash Bros. (i.e. N64)
+        return os.path.join("database", "64.json")
     else:
         return '' # not supported
 

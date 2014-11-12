@@ -31,7 +31,8 @@ import datetime
 
 # set up the parser
 parser = argparse.ArgumentParser()
-parser.add_argument("--bracket", "-b", help="the challonge URL bracket to check", metavar="<url>", required=True)
+parser.add_argument("--bracket", "-b", help="the challonge URL bracket to check", metavar="<url>")
+parser.add_argument("--game", help="the game file to edit; implies --table-only", metavar="<file>")
 parser.add_argument("--quiet", "-q", help="suppress some output", action="store_true")
 parser.add_argument("--dry-run", help="output to stdout instead of publishing changes", action="store_true")
 parser.add_argument("--dump", help="dumps the appropriate JSON response", action="append", choices=["tournament", "players"], default=[], metavar="<type>")
@@ -39,8 +40,17 @@ parser.add_argument("--player", help="show player info of the bracket and exit",
 parser.add_argument("--add", help="adds a player to be processed. Format must have the challonge first and then the ranking", nargs='*', action="append", default=[])
 parser.add_argument("--remove", help="removes a player from processing", nargs="*", metavar="<name>", action="append", default=[])
 parser.add_argument("--force", help="forces processing despite cache", action="store_true")
-parser.add_argument("--table-only", help="doesn't process a tournament and just prints the ladder", action="store_true")
+parser.add_argument("--table-only", help="doesn't process a tournament and just prints the ladder; implies --dry-run", action="store_true")
 args = parser.parse_args()
+
+if args.game != None:
+    args.table_only = True
+
+if args.table_only:
+    args.dry_run = True
+
+if args.bracket == None and args.game == None:
+    parser.error('either --game or --bracket are required')
 
 challonge_path = os.path.join("database", "challonge.json")
 cache_path = os.path.join("database", "cache.json")
@@ -172,6 +182,9 @@ def get_top(limit, tournament):
 
 # get the database file name
 def get_database_file(tournament):
+    # a quick shortcut if --game is provided
+    if args.game:
+        return os.path.join("database", "{}.json".format(args.game))
     game_id = tournament["game-id"]
     if game_id == 16869: # Smash Bros for 3DS
         return os.path.join("database", "3ds.json")
@@ -283,8 +296,13 @@ if __name__ == "__main__":
 
     cache.add(args.bracket)
     login()
-    tournament = get_tournament(args.bracket)
-    db = get_database(tournament)
+    db = None
+    tournament = None
+    if args.bracket:
+        tournament = get_tournament(args.bracket)
+        db = get_database(tournament)
+    else:
+        db = get_database(None)
 
     if not args.quiet:
         print("Tournament ID: {}".format(tournament["id"]))

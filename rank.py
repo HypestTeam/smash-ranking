@@ -188,6 +188,8 @@ def get_database_file(tournament):
     game_id = tournament["game-id"]
     if game_id == 16869: # Smash Bros for 3DS
         return os.path.join("database", "3ds.json")
+    elif game_id == 20988: # Smash Bros fro Wii U
+        return os.path.join("database", "wiiu.json")
     elif game_id == 597: # Project M
         return os.path.join("database", "projectm.json")
     elif game_id == 394: # Smash Bros Melee

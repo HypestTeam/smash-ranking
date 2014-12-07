@@ -142,10 +142,7 @@ def get_tournament(url):
     # at this point the url is subdomain.tournament_id
     fragments = new_url.split('.')
     if len(fragments) == 2:
-        organisation = challonge.tournaments.index(subdomain=fragments[0])
-        for tournament in organisation:
-            if tournament["full-challonge-url"] == url:
-                return challonge.tournaments.show(tournament["id"])
+        return challonge.tournaments.show('{a[0]}-{a[1]}'.format(a=fragments))
 
     # if we're here then there was no subdomain found
     return challonge.tournaments.show(new_url)
